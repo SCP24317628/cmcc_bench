@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import statistics
 import subprocess
 import time
@@ -18,14 +19,32 @@ def parse_args():
     return parser.parse_args()
 
 
+def parse_numeric_value(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    match = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
 def extract_numbers(obj, wanted_keys):
     values = []
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if key.lower() in wanted_keys and isinstance(value, (int, float)):
-                values.append(float(value))
-            else:
-                values.extend(extract_numbers(value, wanted_keys))
+            if key.lower() in wanted_keys:
+                parsed = parse_numeric_value(value)
+                if parsed is not None:
+                    values.append(parsed)
+            values.extend(extract_numbers(value, wanted_keys))
     elif isinstance(obj, list):
         for item in obj:
             values.extend(extract_numbers(item, wanted_keys))
