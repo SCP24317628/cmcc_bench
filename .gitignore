@@ -1,0 +1,34 @@
+# External dependency cloned locally but not committed
+benchmark/
+
+# Benchmark outputs and reports
+outputs/
+
+# Python caches and temp files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# Project temp files
+performance_test/tmp/
+
+# Local virtual environments and env files
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Common runtime artifacts
+*.db
+*_details.jsonl
+*_failed.jsonl
+*_plot.html
+*.log

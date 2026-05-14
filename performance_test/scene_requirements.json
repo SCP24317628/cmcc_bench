@@ -1,0 +1,50 @@
+{
+  "4.4.2": {
+    "scene_name": "scene1_agent",
+    "display_name": "agent/编程场景",
+    "input_len": 40000,
+    "output_len": 200,
+    "ttft_limit_ms": 8000,
+    "tpot_limit_ms": null
+  },
+  "4.4.3": {
+    "scene_name": "scene2_chat",
+    "display_name": "对话场景",
+    "input_len": 4096,
+    "output_len": 1000,
+    "ttft_limit_ms": 2000,
+    "tpot_limit_ms": 35
+  },
+  "4.4.4": {
+    "scene_name": "scene3_kb",
+    "display_name": "知识库场景",
+    "input_len": 7000,
+    "output_len": 2000,
+    "ttft_limit_ms": 4000,
+    "tpot_limit_ms": 35
+  },
+  "4.4.5": {
+    "scene_name": "scene4_analysis",
+    "display_name": "内容分析场景",
+    "input_len": 16000,
+    "output_len": 2000,
+    "ttft_limit_ms": 6000,
+    "tpot_limit_ms": 35
+  },
+  "4.4.6": {
+    "scene_name": "scene5_generation",
+    "display_name": "内容生成场景",
+    "input_len": 512,
+    "output_len": 8000,
+    "ttft_limit_ms": 2000,
+    "tpot_limit_ms": 35
+  },
+  "4.4.7": {
+    "scene_name": "scene6_long_context",
+    "display_name": "超长文本场景",
+    "input_len": 128000,
+    "output_len": 1000,
+    "ttft_limit_ms": null,
+    "tpot_limit_ms": null
+  }
+}
