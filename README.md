@@ -101,12 +101,12 @@ source .venv/bin/activate
 ais_bench --models vllm_api_general_chat_perf_512_8192_bs16 --datasets synthetic_gen_tokenid_in512 --summarizer stable_stage -m perf
 ```
 
-### 5.6 128k / 1024 / bs1
+### 5.6 128k / 1024 / bs32
 
 ```bash
 cd /data/cmcc/release/cmcc_bench/benchmark
 source .venv/bin/activate
-ais_bench --models vllm_api_general_chat_perf_128000_1024_bs1 --datasets synthetic_gen_tokenid_in128000 --summarizer stable_stage -m perf
+ais_bench --models vllm_api_general_chat_perf_128000_1024_bs32 --datasets synthetic_gen_tokenid_in128000 --summarizer stable_stage -m perf
 ```
 
 ## 6. Search Config Path
@@ -184,7 +184,7 @@ python3 sample_gpu_resources.py \
   --output /data/cmcc/release/cmcc_bench/outputs/resource_samples_smoke_512_8192_bs16.json
 ```
 
-### 7.6 128k / 1024 / bs1
+### 7.6 128k / 1024 / bs32
 
 ```bash
 cd /data/cmcc/release/cmcc_bench/performance_test
@@ -194,7 +194,7 @@ python3 sample_gpu_resources.py \
   --ssh-target decoder=mccxadmin@10.121.31.85 \
   --sample-count 6 \
   --interval-seconds 10 \
-  --output /data/cmcc/release/cmcc_bench/outputs/resource_samples_smoke_128000_1024_bs1.json
+  --output /data/cmcc/release/cmcc_bench/outputs/resource_samples_smoke_128000_1024_bs32.json
 ```
 
 ## 8. Resource Summary
