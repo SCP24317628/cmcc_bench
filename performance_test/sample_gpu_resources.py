@@ -12,11 +12,17 @@ from pathlib import Path
 
 DEFAULT_REMOTE_COMMAND = "mthreads-gmi -q -d MEMORY,UTILIZATION,POWER --json"
 DEFAULT_CPU_COMMAND = r"LC_ALL=C top -bn1 | grep -E '^%Cpu|^Cpu\(s\)' | head -n 1"
+LOCAL_TARGET_ALIASES = {"local", "self", "localhost", "127.0.0.1"}
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Sample GPU resource usage through SSH.")
-    parser.add_argument("--ssh-target", action="append", default=[], help="Format: role=user@host")
+    parser.add_argument(
+        "--ssh-target",
+        action="append",
+        default=[],
+        help="Format: name=user@host or name:group=user@host. Use local/self/localhost for local machine.",
+    )
     parser.add_argument("--interval-seconds", type=float, default=5.0)
     parser.add_argument(
         "--sample-count",
@@ -177,11 +183,49 @@ def process_exists(pid: int) -> bool:
     return True
 
 
-def init_target_summary(target: str) -> dict:
-    role, ssh_host = target.split("=", 1)
+def parse_target_spec(target):
+    left, host = target.split("=", 1)
+    if ":" in left:
+        target_name, group = left.split(":", 1)
+    else:
+        target_name = left
+        group = left
+    host = host.strip()
+    is_local = host.lower() in LOCAL_TARGET_ALIASES
+    display_host = "local" if is_local else host
     return {
-        "role": role,
-        "ssh_host": ssh_host,
+        "spec": target,
+        "name": target_name.strip(),
+        "group": group.strip(),
+        "host": host,
+        "is_local": is_local,
+        "display_host": display_host,
+    }
+
+
+def run_target_command(target_info, command):
+    if target_info["is_local"]:
+        return subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            shell=True,
+            executable="/bin/bash",
+        )
+    return subprocess.run(
+        ["ssh", target_info["host"], command],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def init_target_summary(target_info) -> dict:
+    return {
+        "role": target_info["name"],
+        "group": target_info["group"],
+        "ssh_host": target_info["display_host"],
         "sample_rounds": 0,
         "successful_rounds": 0,
         "error_rounds": 0,
@@ -228,6 +272,7 @@ def finalize_target_summary(summary: dict) -> dict:
         cpu_avg = round(summary["cpu_value_sum"] / summary["cpu_value_count"], 4)
     return {
         "role": summary["role"],
+        "group": summary["group"],
         "ssh_host": summary["ssh_host"],
         "sample_count": summary["successful_rounds"],
         "sample_rounds": summary["sample_rounds"],
@@ -244,14 +289,91 @@ def finalize_target_summary(summary: dict) -> dict:
     }
 
 
-def sample_once(target, remote_command, cpu_command, detail_level):
-    role, ssh_host = target.split("=", 1)
+def build_group_summaries(targets):
+    groups = {}
+    for target in targets:
+        group_name = target.get("group") or target["role"]
+        bucket = groups.setdefault(
+            group_name,
+            {
+                "group": group_name,
+                "members": [],
+                "sample_count": 0,
+                "sample_rounds": 0,
+                "error_rounds": 0,
+                "gpu_sum": 0.0,
+                "gpu_count": 0,
+                "gpu_util_max": None,
+                "memory_sum": 0.0,
+                "memory_count": 0,
+                "memory_util_max": None,
+                "power_sum": 0.0,
+                "power_count": 0,
+                "power_w_max": None,
+                "cpu_sum": 0.0,
+                "cpu_count": 0,
+                "cpu_util_max": None,
+                "errors": [],
+            },
+        )
+        bucket["members"].append(target["role"])
+        bucket["sample_count"] += target.get("sample_count", 0) or 0
+        bucket["sample_rounds"] += target.get("sample_rounds", 0) or 0
+        bucket["error_rounds"] += target.get("error_rounds", 0) or 0
+        if target.get("gpu_util_avg") is not None and target.get("sample_count"):
+            bucket["gpu_sum"] += target["gpu_util_avg"] * target["sample_count"]
+            bucket["gpu_count"] += target["sample_count"]
+        if target.get("gpu_util_max") is not None:
+            bucket["gpu_util_max"] = target["gpu_util_max"] if bucket["gpu_util_max"] is None else max(bucket["gpu_util_max"], target["gpu_util_max"])
+        if target.get("memory_util_avg") is not None and target.get("sample_count"):
+            bucket["memory_sum"] += target["memory_util_avg"] * target["sample_count"]
+            bucket["memory_count"] += target["sample_count"]
+        if target.get("memory_util_max") is not None:
+            bucket["memory_util_max"] = target["memory_util_max"] if bucket["memory_util_max"] is None else max(bucket["memory_util_max"], target["memory_util_max"])
+        if target.get("power_w_avg") is not None and target.get("sample_count"):
+            bucket["power_sum"] += target["power_w_avg"] * target["sample_count"]
+            bucket["power_count"] += target["sample_count"]
+        if target.get("power_w_max") is not None:
+            bucket["power_w_max"] = target["power_w_max"] if bucket["power_w_max"] is None else max(bucket["power_w_max"], target["power_w_max"])
+        if target.get("cpu_util_avg") is not None and target.get("sample_count"):
+            bucket["cpu_sum"] += target["cpu_util_avg"] * target["sample_count"]
+            bucket["cpu_count"] += target["sample_count"]
+        if target.get("cpu_util_max") is not None:
+            bucket["cpu_util_max"] = target["cpu_util_max"] if bucket["cpu_util_max"] is None else max(bucket["cpu_util_max"], target["cpu_util_max"])
+        bucket["errors"].extend(target.get("errors") or [])
+
+    result = []
+    for group_name, bucket in groups.items():
+        result.append(
+            {
+                "group": group_name,
+                "member_count": len(bucket["members"]),
+                "members": bucket["members"],
+                "sample_count": bucket["sample_count"],
+                "sample_rounds": bucket["sample_rounds"],
+                "error_rounds": bucket["error_rounds"],
+                "gpu_util_avg": round(bucket["gpu_sum"] / bucket["gpu_count"], 4) if bucket["gpu_count"] else None,
+                "gpu_util_max": round(bucket["gpu_util_max"], 4) if bucket["gpu_util_max"] is not None else None,
+                "memory_util_avg": round(bucket["memory_sum"] / bucket["memory_count"], 4) if bucket["memory_count"] else None,
+                "memory_util_max": round(bucket["memory_util_max"], 4) if bucket["memory_util_max"] is not None else None,
+                "power_w_avg": round(bucket["power_sum"] / bucket["power_count"], 4) if bucket["power_count"] else None,
+                "power_w_max": round(bucket["power_w_max"], 4) if bucket["power_w_max"] is not None else None,
+                "cpu_util_avg": round(bucket["cpu_sum"] / bucket["cpu_count"], 4) if bucket["cpu_count"] else None,
+                "cpu_util_max": round(bucket["cpu_util_max"], 4) if bucket["cpu_util_max"] is not None else None,
+                "errors": bucket["errors"],
+            }
+        )
+    return result
+
+
+def sample_once(target_info, remote_command, cpu_command, detail_level):
     started_at = time.time()
     record = {
         "timestamp": started_at,
         "iso_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started_at)),
-        "role": role,
-        "ssh_host": ssh_host,
+        "role": target_info["name"],
+        "group": target_info["group"],
+        "ssh_host": target_info["display_host"],
         "ok": False,
         "duration_seconds": None,
         "gpu_utils": [],
@@ -261,12 +383,7 @@ def sample_once(target, remote_command, cpu_command, detail_level):
     }
     errors = []
     try:
-        result = subprocess.run(
-            ["ssh", ssh_host, remote_command],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        result = run_target_command(target_info, remote_command)
         payload = json.loads(result.stdout)
         gpu_utils = extract_numbers(payload, {"gpu", "gpu_util", "gpu_utilization", "utilization.gpu"})
         mem_utils = extract_numbers(payload, {"memory", "mem", "memory_util", "memory_utilization", "utilization.memory"})
@@ -292,12 +409,7 @@ def sample_once(target, remote_command, cpu_command, detail_level):
         errors.append(f"gpu:{exc}")
     if cpu_command:
         try:
-            cpu_result = subprocess.run(
-                ["ssh", ssh_host, cpu_command],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            cpu_result = run_target_command(target_info, cpu_command)
             cpu_util = parse_cpu_util_value(cpu_result.stdout.strip())
             record["cpu_util"] = cpu_util
             if cpu_util is not None:
@@ -313,7 +425,8 @@ def sample_once(target, remote_command, cpu_command, detail_level):
 
 
 def run_sampling(args, detail_writer):
-    target_summaries = {target: init_target_summary(target) for target in args.ssh_target}
+    target_infos = [parse_target_spec(target) for target in args.ssh_target]
+    target_summaries = {target_info["spec"]: init_target_summary(target_info) for target_info in target_infos}
     started_at = time.time()
     wrapped_proc = None
     wrapped_returncode = None
@@ -336,9 +449,9 @@ def run_sampling(args, detail_writer):
     while True:
         round_started_at = time.time()
         total_rounds += 1
-        for target in args.ssh_target:
-            record = sample_once(target, args.remote_command, args.cpu_command, args.detail_level)
-            summary = target_summaries[target]
+        for target_info in target_infos:
+            record = sample_once(target_info, args.remote_command, args.cpu_command, args.detail_level)
+            summary = target_summaries[target_info["spec"]]
             summary["sample_rounds"] += 1
             if record["ok"]:
                 summary["successful_rounds"] += 1
@@ -374,10 +487,11 @@ def run_sampling(args, detail_writer):
             time.sleep(sleep_seconds)
 
     finished_at = time.time()
-    targets = [finalize_target_summary(target_summaries[target]) for target in args.ssh_target]
+    targets = [finalize_target_summary(target_summaries[target_info["spec"]]) for target_info in target_infos]
     result = {
         "mode": mode,
         "targets": targets,
+        "groups": build_group_summaries(targets),
         "interval_seconds": args.interval_seconds,
         "sample_count": total_rounds,
         "detail_level": args.detail_level,
