@@ -12,6 +12,7 @@ from pathlib import Path
 
 DEFAULT_REMOTE_COMMAND = "mthreads-gmi -q -d MEMORY,UTILIZATION,POWER --json"
 DEFAULT_CPU_COMMAND = r"LC_ALL=C top -bn1 | grep -E '^%Cpu|^Cpu\(s\)' | head -n 1"
+DEFAULT_POWER_COMMAND = r"mthreads-gmi -q | grep -E 'Power Draw'"
 LOCAL_TARGET_ALIASES = {"local", "self", "localhost", "127.0.0.1"}
 
 
@@ -35,6 +36,11 @@ def parse_args():
         "--cpu-command",
         default=DEFAULT_CPU_COMMAND,
         help="Remote command used to sample host CPU utilization. Empty string disables CPU sampling.",
+    )
+    parser.add_argument(
+        "--power-command",
+        default=DEFAULT_POWER_COMMAND,
+        help="Remote command used to sample power draw when JSON output has no power field. Empty string disables fallback power sampling.",
     )
     parser.add_argument("--output", required=True, help="Summary JSON output path.")
     parser.add_argument(
@@ -130,6 +136,20 @@ def parse_cpu_util_value(text):
         except ValueError:
             return None
     return None
+
+
+def parse_power_draw_values(text):
+    if not text:
+        return []
+    values = []
+    for line in text.splitlines():
+        match = re.search(r"(\d+(?:\.\d+)?)\s*W\b", line, re.IGNORECASE)
+        if match:
+            try:
+                values.append(float(match.group(1)))
+            except ValueError:
+                continue
+    return values
 
 
 class DetailShardWriter:
@@ -245,12 +265,12 @@ def init_target_summary(target_info) -> dict:
     }
 
 
-def update_metric_stats(summary, key_prefix, values):
+def update_metric_stats(summary, key_prefix, values, max_key=None):
     if not values:
         return
     count_key = f"{key_prefix}_value_count"
     sum_key = f"{key_prefix}_value_sum"
-    max_key = f"{key_prefix}_util_max"
+    max_key = max_key or f"{key_prefix}_util_max"
     summary[count_key] += len(values)
     summary[sum_key] += sum(values)
     current_max = max(values)
@@ -366,7 +386,7 @@ def build_group_summaries(targets):
     return result
 
 
-def sample_once(target_info, remote_command, cpu_command, detail_level):
+def sample_once(target_info, remote_command, cpu_command, power_command, detail_level):
     started_at = time.time()
     record = {
         "timestamp": started_at,
@@ -382,27 +402,25 @@ def sample_once(target_info, remote_command, cpu_command, detail_level):
         "cpu_util": None,
     }
     errors = []
+    if power_command:
+        try:
+            power_result = run_target_command(target_info, power_command)
+            power_watts = parse_power_draw_values(power_result.stdout.strip())
+            if power_watts:
+                record["power_watts"] = power_watts
+                record["ok"] = True
+            if detail_level == "raw":
+                record["power_raw"] = power_result.stdout.strip()
+        except Exception as exc:  # pragma: no cover - best effort collector
+            errors.append(f"power:{exc}")
     try:
         result = run_target_command(target_info, remote_command)
         payload = json.loads(result.stdout)
         gpu_utils = extract_numbers(payload, {"gpu", "gpu_util", "gpu_utilization", "utilization.gpu"})
         mem_utils = extract_numbers(payload, {"memory", "mem", "memory_util", "memory_utilization", "utilization.memory"})
-        power_watts = extract_numbers(
-            payload,
-            {
-                "power",
-                "power_w",
-                "power_draw",
-                "power_draw",
-                "average_power",
-                "board_power",
-                "gpu_power",
-            },
-        )
         record["ok"] = True
         record["gpu_utils"] = gpu_utils
         record["memory_utils"] = mem_utils
-        record["power_watts"] = power_watts
         if detail_level == "raw":
             record["raw"] = payload
     except Exception as exc:  # pragma: no cover - best effort collector
@@ -450,14 +468,14 @@ def run_sampling(args, detail_writer):
         round_started_at = time.time()
         total_rounds += 1
         for target_info in target_infos:
-            record = sample_once(target_info, args.remote_command, args.cpu_command, args.detail_level)
+            record = sample_once(target_info, args.remote_command, args.cpu_command, args.power_command, args.detail_level)
             summary = target_summaries[target_info["spec"]]
             summary["sample_rounds"] += 1
             if record["ok"]:
                 summary["successful_rounds"] += 1
                 update_metric_stats(summary, "gpu", record["gpu_utils"])
                 update_metric_stats(summary, "memory", record["memory_utils"])
-                update_metric_stats(summary, "power", record["power_watts"])
+                update_metric_stats(summary, "power", record["power_watts"], max_key="power_w_max")
                 if record["cpu_util"] is not None:
                     update_metric_stats(summary, "cpu", [record["cpu_util"]])
             else:
@@ -500,6 +518,7 @@ def run_sampling(args, detail_writer):
         "chunk_max_bytes": detail_writer.max_bytes,
         "remote_command": args.remote_command,
         "cpu_command": args.cpu_command,
+        "power_command": args.power_command,
         "started_at": started_at,
         "ended_at": finished_at,
         "duration_seconds": round(finished_at - started_at, 4),
